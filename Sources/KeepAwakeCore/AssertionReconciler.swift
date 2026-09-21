@@ -13,25 +13,28 @@ public final class AssertionReconciler {
     public struct Configuration: Sendable {
         /// Seconds after which the OS releases the assertion unless we re-arm.
         public let assertionTimeout: TimeInterval
-        /// How often we re-arm. Always at most half of `assertionTimeout`.
+        /// How often we re-arm. Always at most one third of `assertionTimeout`.
         public let rearmInterval: TimeInterval
         /// Assertion name, visible in `pmset -g assertions`.
         public let name: String
 
         /// - Parameters:
         ///   - assertionTimeout: Clamped to a sane floor; a very short timeout would cause churn.
-        ///   - rearmInterval: Defaults to half the timeout. Clamped so that it never exceeds half
-        ///     the timeout, which guarantees that even one entirely missed re-arm tick cannot let
-        ///     the assertion lapse.
+        ///     Non-finite values fall back to the default.
+        ///   - rearmInterval: Defaults to a third of the timeout, and is clamped so it can never
+        ///     exceed that. A third rather than a half because at a half, one missed tick lands the
+        ///     next attempt exactly on the timeout deadline, where scheduling latency or timer
+        ///     coalescing could still leave an unprotected gap.
         public init(
             assertionTimeout: TimeInterval = 600,
             rearmInterval: TimeInterval? = nil,
             name: String
         ) {
-            let timeout = max(assertionTimeout, 10)
+            let timeout = max(assertionTimeout.isFinite ? assertionTimeout : 600, 10)
             self.assertionTimeout = timeout
-            let requested = rearmInterval ?? timeout / 2
-            self.rearmInterval = min(max(requested, 1), timeout / 2)
+            let ceiling = timeout / 3
+            let requested = rearmInterval.flatMap { $0.isFinite ? $0 : nil } ?? ceiling
+            self.rearmInterval = min(max(requested, 1), ceiling)
             self.name = name
         }
     }
@@ -45,6 +48,9 @@ public final class AssertionReconciler {
     private let clock: MonotonicClock
     private let configuration: Configuration
     private var armed: [AssertionKind: Armed] = [:]
+    /// Assertions we failed to release, mapped to the deadline by which the OS will have dropped
+    /// them anyway. Retried opportunistically so "turn it off" really does turn it off.
+    private var retiring: [PowerAssertionID: TimeInterval] = [:]
 
     public init(
         controller: PowerAssertionControlling,
@@ -61,8 +67,19 @@ public final class AssertionReconciler {
         Set(armed.keys)
     }
 
-    /// Brings the real assertion state in line with `desired`.
-    public func apply(_ desired: DesiredAssertionState, details: String? = nil) throws {
+    /// Assertions that could not be released and are awaiting retry or OS timeout.
+    public var retiringCount: Int {
+        retiring.count
+    }
+
+    /// Brings real assertion state in line with `desired`, and re-arms anything due.
+    ///
+    /// Reconciling and re-arming are deliberately a single operation. When they were separate, an
+    /// `apply` that ran after the OS had already timed out an assertion would see a stale tracking
+    /// entry, assume the assertion was still live, and skip creating a replacement — leaving the app
+    /// believing it held protection it did not.
+    public func reconcile(to desired: DesiredAssertionState, details: String? = nil) throws {
+        let now = clock.now
         let needed: Set<AssertionKind> =
             switch desired {
             case .idle:
@@ -73,28 +90,27 @@ public final class AssertionReconciler {
                     : [.preventIdleSystemSleep]
             }
 
-        for kind in needed where armed[kind] == nil {
-            let id = try controller.create(
-                kind: kind,
-                name: configuration.name,
-                details: details,
-                timeout: configuration.assertionTimeout
-            )
-            armed[kind] = Armed(id: id, armedAt: clock.uptime)
-        }
+        retryRetirements(now: now)
 
         for (kind, entry) in armed where !needed.contains(kind) {
-            // Stop tracking even if the release call fails: we must not retain a handle we cannot
-            // act on. The OS-enforced timeout guarantees the assertion still goes away.
             armed[kind] = nil
-            try controller.release(entry.id)
+            retire(entry)
         }
-    }
 
-    /// Re-arms any assertion that is approaching its timeout. Call periodically.
-    public func tick(details: String? = nil) throws {
-        let now = clock.uptime
-        for (kind, entry) in armed where now - entry.armedAt >= configuration.rearmInterval {
+        for kind in needed {
+            guard let entry = armed[kind] else {
+                let id = try controller.create(
+                    kind: kind,
+                    name: configuration.name,
+                    details: details,
+                    timeout: configuration.assertionTimeout
+                )
+                armed[kind] = Armed(id: id, armedAt: now)
+                continue
+            }
+
+            guard now - entry.armedAt >= configuration.rearmInterval else { continue }
+
             // Create the replacement *before* releasing the old one. Releasing first would leave a
             // window, however brief, in which the Mac is unprotected and could begin idle sleep.
             let replacement = try controller.create(
@@ -103,13 +119,36 @@ public final class AssertionReconciler {
                 details: details,
                 timeout: configuration.assertionTimeout
             )
-            try? controller.release(entry.id)
             armed[kind] = Armed(id: replacement, armedAt: now)
+            retire(entry)
         }
     }
 
     /// Releases everything. Used on quit.
     public func releaseAll() throws {
-        try apply(.idle)
+        try reconcile(to: .idle)
+    }
+
+    /// Attempts to release an assertion we no longer want, parking it for retry if that fails.
+    private func retire(_ entry: Armed) {
+        do {
+            try controller.release(entry.id)
+        } catch {
+            // Bounded, not leaked: the OS-enforced timeout will drop it even if every retry fails.
+            retiring[entry.id] = entry.armedAt + configuration.assertionTimeout
+        }
+    }
+
+    private func retryRetirements(now: TimeInterval) {
+        for (id, deadline) in retiring {
+            guard now < deadline else {
+                // The OS has released it for us by now.
+                retiring[id] = nil
+                continue
+            }
+            if (try? controller.release(id)) != nil {
+                retiring[id] = nil
+            }
+        }
     }
 }

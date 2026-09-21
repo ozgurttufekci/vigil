@@ -4,15 +4,15 @@ import KeepAwakeCore
 /// A clock the test drives by hand, so duration logic is verified without ever sleeping.
 final class ManualClock: MonotonicClock, @unchecked Sendable {
     private let lock = NSLock()
-    private var _uptime: TimeInterval
+    private var _now: TimeInterval
 
-    init(uptime: TimeInterval = 1000) {
-        self._uptime = uptime
+    init(now: TimeInterval = 1000) {
+        self._now = now
     }
 
-    var uptime: TimeInterval { lock.withLock { _uptime } }
+    var now: TimeInterval { lock.withLock { _now } }
 
     func advance(by interval: TimeInterval) {
-        lock.withLock { _uptime += interval }
+        lock.withLock { _now += interval }
     }
 }

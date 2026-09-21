@@ -38,10 +38,15 @@ the assertion on its own and normal sleep behaviour returns.
 
 Two details make that guarantee real, and both are covered by tests:
 
-- The re-arm interval is always clamped to **at most half** the assertion timeout, so even one
-  entirely missed tick cannot let the assertion lapse.
+- The re-arm interval is always clamped to **at most one third** of the assertion timeout. At a
+  half, a single missed tick would land the next attempt exactly on the timeout deadline, where
+  scheduling latency could still leave a gap.
 - Re-arming **creates the replacement assertion before releasing the old one**. Releasing first
   would leave a window, however brief, in which the Mac is unprotected and could begin idle sleep.
+
+Reconciling and re-arming are a single operation rather than two. When they were separate, a
+reconcile that ran after the OS had already timed out an assertion would see a stale tracking entry,
+assume protection was still in place, and skip creating a replacement.
 
 ### Battery first
 
@@ -49,11 +54,17 @@ By default Vigil prevents idle *system* sleep and **lets the display sleep**. Th
 dominant power draw, and background work keeps running fine with the screen off. Keeping the display
 awake is opt-in.
 
-### Durations use a monotonic clock
+### Durations use a monotonic clock that counts sleep
 
-Hold deadlines are measured against `systemUptime`, not wall-clock `Date`. Wall-clock time can jump
-backwards or forwards (NTP correction, manual clock changes, daylight saving), which would make a
-"30 minutes" hold expire early or late.
+Hold deadlines are measured against `CLOCK_MONOTONIC_RAW`, not wall-clock `Date` and not
+`ProcessInfo.systemUptime`.
+
+Wall-clock time can jump backwards or forwards (NTP correction, manual clock changes, daylight
+saving), which would make a "30 minutes" hold expire early or late. But `systemUptime` is wrong too,
+because it *stops* while the Mac is asleep: a 30-minute hold started before an overnight suspend
+would still have 25 minutes left the next morning and would immediately refuse to let the Mac sleep
+again. On the development machine, `systemUptime` trailed `CLOCK_MONOTONIC_RAW` by 87 hours of
+accumulated sleep.
 
 ### Secrets never leave the process
 

@@ -39,16 +39,16 @@ public struct HoldSet: Sendable, Equatable {
     }
 
     /// Holds that have not yet expired, newest first.
-    public func active(at uptime: TimeInterval) -> [Hold] {
+    public func active(at now: TimeInterval) -> [Hold] {
         storage.values
-            .filter { !$0.isExpired(at: uptime) }
+            .filter { !$0.isExpired(at: now) }
             .sorted { $0.createdAt > $1.createdAt }
     }
 
     /// Drops expired holds and returns them, so the caller can notify the user.
     @discardableResult
-    public mutating func pruneExpired(at uptime: TimeInterval) -> [Hold] {
-        removeAll { $0.isExpired(at: uptime) }
+    public mutating func pruneExpired(at now: TimeInterval) -> [Hold] {
+        removeAll { $0.isExpired(at: now) }
     }
 
     /// The state the power-management layer should be reconciled to.
@@ -56,8 +56,8 @@ public struct HoldSet: Sendable, Equatable {
     /// The display is kept awake only if at least one active hold explicitly asks for it, so a
     /// display-awake hold expiring downgrades to system-only rather than dropping protection
     /// entirely.
-    public func desiredState(at uptime: TimeInterval) -> DesiredAssertionState {
-        let live = active(at: uptime)
+    public func desiredState(at now: TimeInterval) -> DesiredAssertionState {
+        let live = active(at: now)
         guard !live.isEmpty else { return .idle }
         return .awake(keepDisplayAwake: live.contains { $0.keepDisplayAwake })
     }
@@ -65,7 +65,7 @@ public struct HoldSet: Sendable, Equatable {
     /// The soonest deadline among active holds, used to schedule the next wake-up.
     ///
     /// `nil` when nothing is active or every active hold is indefinite.
-    public func nextExpiry(at uptime: TimeInterval) -> TimeInterval? {
-        active(at: uptime).compactMap(\.expiry).min()
+    public func nextExpiry(at now: TimeInterval) -> TimeInterval? {
+        active(at: now).compactMap(\.expiry).min()
     }
 }

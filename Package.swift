@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Vigil",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     products: [
         .library(name: "KeepAwakeCore", targets: ["KeepAwakeCore"]),
         .library(name: "PowerAssertions", targets: ["PowerAssertions"]),

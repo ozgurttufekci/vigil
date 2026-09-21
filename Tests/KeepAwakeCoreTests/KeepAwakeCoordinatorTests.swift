@@ -102,6 +102,39 @@ struct KeepAwakeCoordinatorTests {
         #expect(controller.liveIDs.isEmpty)
     }
 
+    @Test("A hold that fails to activate is rolled back instead of being left orphaned")
+    func failedAddIsRolledBack() throws {
+        // Without rollback the hold would stay in storage while the caller held no handle to it,
+        // and a later successful refresh would re-arm it forever with no way to cancel.
+        let (sut, controller, _) = makeSUT()
+        controller.failNextCreate(with: PowerAssertionError(code: -1, operation: "test"))
+
+        #expect(throws: PowerAssertionError.self) {
+            try sut.add(source: .manual, reason: "doomed", duration: nil)
+        }
+
+        #expect(sut.activeHolds.isEmpty)
+        #expect(sut.state == .idle)
+
+        try sut.refresh()
+        #expect(controller.liveIDs.isEmpty)
+    }
+
+    @Test("A failed add leaves an existing hold untouched")
+    func failedAddDoesNotDisturbExistingHolds() throws {
+        let (sut, controller, _) = makeSUT()
+        try sut.add(source: .manual, reason: "keeper", duration: nil)
+        controller.failNextCreate(with: PowerAssertionError(code: -1, operation: "test"))
+
+        #expect(throws: PowerAssertionError.self) {
+            try sut.add(source: .manual, reason: "doomed", duration: nil, keepDisplayAwake: true)
+        }
+
+        #expect(sut.activeHolds.map(\.reason) == ["keeper"])
+        #expect(sut.state == .awake(keepDisplayAwake: false))
+        #expect(!controller.liveIDs.isEmpty)
+    }
+
     @Test("Shutting down releases everything")
     func shutdownReleasesEverything() throws {
         let (sut, controller, _) = makeSUT()

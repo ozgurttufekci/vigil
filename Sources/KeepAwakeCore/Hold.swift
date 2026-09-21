@@ -46,14 +46,14 @@ public struct Hold: Sendable, Hashable, Identifiable {
         self.createdAt = createdAt
     }
 
-    public func isExpired(at uptime: TimeInterval) -> Bool {
+    public func isExpired(at now: TimeInterval) -> Bool {
         guard let expiry else { return false }
-        return uptime >= expiry
+        return now >= expiry
     }
 
     /// Seconds left, or `nil` for an indefinite hold. Never negative.
-    public func remaining(at uptime: TimeInterval) -> TimeInterval? {
+    public func remaining(at now: TimeInterval) -> TimeInterval? {
         guard let expiry else { return nil }
-        return max(0, expiry - uptime)
+        return max(0, expiry - now)
     }
 }

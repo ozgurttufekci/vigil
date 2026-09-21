@@ -46,6 +46,20 @@ struct IOKitPowerAssertionControllerTests {
         }
     }
 
+    @Test("Infinite and NaN timeouts are rejected, because they are not a bounded watchdog")
+    func rejectsNonFiniteTimeout() {
+        let sut = IOKitPowerAssertionController()
+
+        #expect(throws: InvalidTimeoutError.self) {
+            try sut.create(
+                kind: .preventIdleSystemSleep, name: "t", details: nil, timeout: .infinity
+            )
+        }
+        #expect(throws: InvalidTimeoutError.self) {
+            try sut.create(kind: .preventIdleSystemSleep, name: "t", details: nil, timeout: .nan)
+        }
+    }
+
     @Test("A real assertion becomes visible to the system and disappears when released")
     func assertionIsVisibleToPmset() throws {
         let sut = IOKitPowerAssertionController()

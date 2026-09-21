@@ -22,10 +22,11 @@ public struct PowerAssertionError: Error, Equatable, Sendable {
     }
 }
 
-/// Thrown when a caller requests a non-positive timeout.
+/// Thrown when a caller requests a timeout that is not finite and positive.
 ///
-/// A zero timeout means "never time out" to IOKit, which would defeat the watchdog that guarantees
-/// a crashed or hung app cannot strand the machine awake. We reject it at the boundary instead.
+/// A zero timeout means "never time out" to IOKit, and an infinite or NaN one is not a bounded
+/// watchdog at all. Either would defeat the guarantee that a crashed or hung app cannot strand the
+/// machine awake, so they are rejected at the boundary.
 public struct InvalidTimeoutError: Error, Equatable, Sendable {
     public let timeout: TimeInterval
 

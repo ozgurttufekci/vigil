@@ -15,16 +15,16 @@ public final class KeepAwakeCoordinator {
     }
 
     public var activeHolds: [Hold] {
-        holds.active(at: clock.uptime)
+        holds.active(at: clock.now)
     }
 
     public var state: DesiredAssertionState {
-        holds.desiredState(at: clock.uptime)
+        holds.desiredState(at: clock.now)
     }
 
     /// Seconds until the soonest hold expires, or `nil` if nothing is scheduled to expire.
     public var timeUntilNextExpiry: TimeInterval? {
-        let now = clock.uptime
+        let now = clock.now
         guard let next = holds.nextExpiry(at: now) else { return nil }
         return max(0, next - now)
     }
@@ -43,7 +43,7 @@ public final class KeepAwakeCoordinator {
         duration: TimeInterval?,
         keepDisplayAwake: Bool = false
     ) throws -> Hold {
-        let now = clock.uptime
+        let now = clock.now
         let hold = Hold(
             source: source,
             reason: reason,
@@ -52,7 +52,15 @@ public final class KeepAwakeCoordinator {
             createdAt: now
         )
         holds.insert(hold)
-        try reconcile()
+        do {
+            try reconcile()
+        } catch {
+            // Roll back, or the caller would be left with no handle to a hold that later
+            // reconciliations would happily keep alive forever.
+            holds.remove(hold.id)
+            try? reconcile()
+            throw error
+        }
         return hold
     }
 
@@ -74,9 +82,8 @@ public final class KeepAwakeCoordinator {
     /// - Returns: Holds that expired during this call, so the caller can notify the user.
     @discardableResult
     public func refresh() throws -> [Hold] {
-        let expired = holds.pruneExpired(at: clock.uptime)
+        let expired = holds.pruneExpired(at: clock.now)
         try reconcile()
-        try reconciler.tick(details: currentDetails)
         return expired
     }
 
@@ -87,12 +94,12 @@ public final class KeepAwakeCoordinator {
     }
 
     private func reconcile() throws {
-        try reconciler.apply(holds.desiredState(at: clock.uptime), details: currentDetails)
+        try reconciler.reconcile(to: holds.desiredState(at: clock.now), details: currentDetails)
     }
 
     /// A short, secret-free summary of why the Mac is awake.
     private var currentDetails: String? {
-        let live = holds.active(at: clock.uptime)
+        let live = holds.active(at: clock.now)
         guard let first = live.first else { return nil }
         return live.count == 1 ? first.reason : "\(first.reason) (+\(live.count - 1) more)"
     }

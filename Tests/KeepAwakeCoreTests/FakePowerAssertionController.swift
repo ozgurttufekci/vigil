@@ -22,6 +22,7 @@ final class FakePowerAssertionController: PowerAssertionControlling, @unchecked 
     private var _live: Set<PowerAssertionID> = []
     private var _failNextCreate: PowerAssertionError?
     private var _failNextRelease: PowerAssertionError?
+    private var _alwaysFailRelease = false
 
     var events: [Event] { lock.withLock { _events } }
     var liveIDs: Set<PowerAssertionID> { lock.withLock { _live } }
@@ -36,6 +37,10 @@ final class FakePowerAssertionController: PowerAssertionControlling, @unchecked 
 
     func failNextRelease(with error: PowerAssertionError) {
         lock.withLock { _failNextRelease = error }
+    }
+
+    func alwaysFailRelease() {
+        lock.withLock { _alwaysFailRelease = true }
     }
 
     func reset() {
@@ -72,11 +77,15 @@ final class FakePowerAssertionController: PowerAssertionControlling, @unchecked 
     func release(_ id: PowerAssertionID) throws {
         try lock.withLock {
             _events.append(.release(id))
-            _live.remove(id)
+            if _alwaysFailRelease {
+                throw PowerAssertionError(code: -536_870_206, operation: "release")
+            }
             if let error = _failNextRelease {
                 _failNextRelease = nil
+                // Deliberately left in `_live`: a failed release means the assertion is still held.
                 throw error
             }
+            _live.remove(id)
         }
     }
 }

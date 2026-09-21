@@ -16,7 +16,7 @@ public struct IOKitPowerAssertionController: PowerAssertionControlling {
         details: String?,
         timeout: TimeInterval
     ) throws -> PowerAssertionID {
-        guard timeout > 0 else { throw InvalidTimeoutError(timeout: timeout) }
+        guard timeout > 0, timeout.isFinite else { throw InvalidTimeoutError(timeout: timeout) }
 
         var properties: [String: Any] = [
             kIOPMAssertionTypeKey as String: kind.ioKitType,
