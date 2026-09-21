@@ -1,6 +1,7 @@
 import Foundation
 import KeepAwakeCore
 import PowerAssertions
+import TestSupport
 import Testing
 
 @Suite("KeepAwakeCoordinator")

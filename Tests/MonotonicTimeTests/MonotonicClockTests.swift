@@ -1,5 +1,5 @@
 import Foundation
-import KeepAwakeCore
+import MonotonicTime
 import Testing
 
 @Suite("SystemMonotonicClock")

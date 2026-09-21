@@ -1,4 +1,5 @@
 import Foundation
+import MonotonicTime
 
 /// The top-level engine: owns the set of holds and keeps real power state in sync with it.
 ///

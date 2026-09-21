@@ -1,4 +1,5 @@
 import Foundation
+import MonotonicTime
 import PowerAssertions
 
 /// Drives the real power-assertion layer toward a desired state, and keeps a rolling watchdog armed.
