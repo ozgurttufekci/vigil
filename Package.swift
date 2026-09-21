@@ -23,5 +23,9 @@ let package = Package(
             dependencies: ["KeepAwakeCore", "PowerAssertions", "TestSupport"]
         ),
         .testTarget(name: "ProcessWatchTests", dependencies: ["ProcessWatch", "TestSupport"]),
+        .executableTarget(
+            name: "VigilApp",
+            dependencies: ["KeepAwakeCore", "PowerAssertions", "ProcessWatch", "MonotonicTime"]
+        ),
     ]
 )

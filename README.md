@@ -2,8 +2,8 @@
 
 Keeps your Mac awake **while your work is actually running** — then lets it sleep again.
 
-> **Status: early development.** The core engine (Phase 1) is built and tested. There is no app
-> bundle yet. The name is provisional.
+> **Status: early development.** The core engine, the auto-detect engine, and a working menu bar
+> app are built and tested. Not yet signed for distribution. The name is provisional.
 
 ## Why
 
@@ -21,7 +21,42 @@ Vigil's core primitive is instead **stay awake until the work is finished**: it 
 process you care about, holds the Mac awake while that process is genuinely busy, and releases as
 soon as it goes quiet. A manual duration picker is still there when you want one.
 
+## Install
+
+Requires macOS 14 or later.
+
+```sh
+./Scripts/build-app.sh release
+open build/Vigil.app
+```
+
+Vigil lives in the menu bar with no Dock icon. Click it to pick a duration, toggle automatic
+detection, or choose which tools to watch.
+
 ## Design
+
+### Detection: CPU is the wrong signal for AI agents
+
+The obvious way to tell whether a program is working is to watch its CPU usage. For compilers,
+encoders, and container builds that is correct, and it is what Vigil does.
+
+**It does not work for AI coding agents**, and the measurements are not close. Sampling a live
+Copilot session through the kernel's own counters, the agent process used **0.03–0.09% CPU while
+actively working**, peaking at 1.4%. Its whole process tree measured 0%, because the subprocesses it
+runs are not even its descendants. An agent spends nearly all of its time waiting on model
+responses; the real work happens on remote servers. A CPU threshold would simply never fire.
+
+(`ps` reports 111–168% for the same process. That is a decaying average and is misleading — the
+cumulative CPU counter shows the truth.)
+
+So agents are detected by **file activity** instead: an active session continuously appends to its
+session log. That signal is bursty — nothing is written while a single long tool call runs, with
+measured gaps of 30 seconds and more — which is exactly what the grace period is for. Agent rules
+use a much longer one (5 minutes) than CPU rules.
+
+A rule always requires a **matching process to exist**, even when it triggers on file activity.
+Without that, a leftover log file touched by something else could pin the Mac awake with the tool
+not even running.
 
 ### Holds stack
 
@@ -81,8 +116,9 @@ it without a privileged helper.
 
 ## Building
 
-Requires Swift 6. The core packages build with the Command Line Tools alone; the menu bar app and
-the Control Center extension (later phases) will require full Xcode.
+Requires Swift 6. Everything here builds with the Command Line Tools alone — `Scripts/build-app.sh`
+assembles the `.app` bundle by hand. Full Xcode is needed only for the Control Center extension and
+for signed distribution.
 
 ```sh
 swift build
@@ -97,8 +133,11 @@ the necessary search paths when running with just the Command Line Tools, and is
 
 | Path | Purpose |
 |---|---|
+| `Sources/MonotonicTime` | The shared clock |
 | `Sources/PowerAssertions` | Thin, testable wrapper over IOKit power management |
 | `Sources/KeepAwakeCore` | Hold model, desired-state derivation, watchdog reconciler |
+| `Sources/ProcessWatch` | Process discovery, CPU and file-activity signals, rule engine |
+| `Sources/VigilApp` | Menu bar app |
 | `Tests/` | Unit tests against fakes, plus integration tests against real system power state |
 
 The test suite includes an integration test that creates a real assertion, confirms it appears in

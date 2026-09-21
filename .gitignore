@@ -3,3 +3,4 @@
 .swiftpm/
 *.xcuserdatad
 xcuserdata/
+build/

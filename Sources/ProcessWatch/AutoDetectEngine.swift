@@ -38,7 +38,10 @@ public final class AutoDetectEngine {
     private let sampler: ProcessSampling
     private let clock: MonotonicClock
     private let configuration: Configuration
+    private let makeWatcher: @Sendable () -> FileActivityWatching
     private var trackers: [ProcessIdentity: ActivityTracker] = [:]
+    /// One watcher per file-activity rule, created lazily when the rule first matches a process.
+    private var watchers: [String: FileActivityWatching] = [:]
     private var lastDiscovery: TimeInterval?
 
     public var rules: [ProcessRule]
@@ -47,12 +50,14 @@ public final class AutoDetectEngine {
         sampler: ProcessSampling,
         clock: MonotonicClock,
         rules: [ProcessRule] = ProcessRule.presets,
-        configuration: Configuration = .init()
+        configuration: Configuration = .init(),
+        makeWatcher: (@Sendable () -> FileActivityWatching)? = nil
     ) {
         self.sampler = sampler
         self.clock = clock
         self.rules = rules
         self.configuration = configuration
+        self.makeWatcher = makeWatcher ?? { DarwinFileActivityWatcher(clock: clock) }
     }
 
     /// Processes currently justifying a hold.
@@ -89,11 +94,16 @@ public final class AutoDetectEngine {
         }
 
         sampleTracked(at: now)
+        // Sync after sampling, so a watcher stops in the same cycle the process it belongs to is
+        // found to have exited rather than lingering until the next discovery sweep.
+        syncWatchers()
     }
 
     /// Forgets all tracked processes, e.g. when auto-detect is turned off.
     public func reset() {
         trackers.removeAll()
+        for watcher in watchers.values { watcher.stop() }
+        watchers.removeAll()
         lastDiscovery = nil
     }
 
@@ -125,14 +135,47 @@ public final class AutoDetectEngine {
         }
     }
 
+    /// Starts watchers for file-activity rules that have a live process, and stops the rest.
+    ///
+    /// Watching is tied to the process existing so that a stale log file being touched by something
+    /// else cannot pin the Mac awake while the tool is not running.
+    private func syncWatchers() {
+        let live = Dictionary(
+            trackers.values.map { ($0.rule.id, $0.rule) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        for (ruleID, rule) in live where !rule.watchedPaths.isEmpty {
+            let watcher = watchers[ruleID] ?? makeWatcher()
+            watchers[ruleID] = watcher
+            watcher.watch(paths: rule.watchedPaths)
+        }
+
+        for (ruleID, watcher) in watchers where live[ruleID] == nil {
+            watcher.stop()
+            watchers[ruleID] = nil
+        }
+    }
+
     private func sampleTracked(at now: TimeInterval) {
         for (identity, var tracker) in trackers {
-            guard let sample = sampler.sampleCPU(for: identity) else {
-                // The process exited, or its PID was reused by a different process.
-                trackers[identity] = nil
-                continue
+            switch tracker.rule.signal {
+            case .cpu:
+                guard let sample = sampler.sampleCPU(for: identity) else {
+                    // The process exited, or its PID was reused by a different process.
+                    trackers[identity] = nil
+                    continue
+                }
+                tracker.record(sample: sample, at: now)
+            case .fileActivity:
+                // Still confirm the process is alive: file activity alone must not hold the Mac
+                // awake once the tool has quit.
+                guard sampler.sampleCPU(for: identity) != nil else {
+                    trackers[identity] = nil
+                    continue
+                }
+                tracker.record(lastFileChange: watchers[tracker.rule.id]?.lastChange, at: now)
             }
-            tracker.record(sample: sample, at: now)
             tracker.tick(at: now)
             trackers[identity] = tracker
         }

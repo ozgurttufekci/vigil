@@ -1,11 +1,11 @@
 import Foundation
 import MonotonicTime
 
-/// Whether a tracked process currently justifies keeping the Mac awake.
+/// Whether a tracked rule currently justifies keeping the Mac awake.
 public enum ActivityState: Sendable, Equatable {
-    /// Below the idle threshold for longer than the grace period.
+    /// Quiet for longer than the grace period.
     case idle
-    /// At or above the busy threshold.
+    /// Actively working.
     case busy
     /// Recently quiet, still inside the grace period. Still holds the Mac awake.
     case cooling(since: TimeInterval)
@@ -18,20 +18,18 @@ public enum ActivityState: Sendable, Equatable {
     }
 }
 
-/// Tracks one process's CPU usage and decides whether it is working.
+/// Turns a stream of observations into a stable busy/idle decision.
 ///
-/// ## Why CPU and not mere presence
-///
-/// A Copilot helper spawned by VS Code lives for the whole editor session. Measured on a
-/// development Mac it stayed resident for 13 minutes of idling, and sat at 117–168% CPU only while
-/// actually working. Holding the Mac awake merely because the process exists would pin it awake for
-/// as long as the editor is open — worse than the problem this app solves.
+/// The state machine is shared by both signals so hysteresis and the grace period behave
+/// identically whether busyness came from CPU or from file activity.
 public struct ActivityTracker: Sendable {
     public let identity: ProcessIdentity
     public let rule: ProcessRule
 
-    private var lastSample: (cpuTime: TimeInterval, at: TimeInterval)?
+    private var lastCPUSample: (cpuTime: TimeInterval, at: TimeInterval)?
+    private var lastSeenFileChange: TimeInterval?
     private(set) public var state: ActivityState = .idle
+    /// Most recent CPU reading, for display. Always 0 for file-activity rules.
     private(set) public var cpuPercent: Double = 0
 
     public init(identity: ProcessIdentity, rule: ProcessRule) {
@@ -39,42 +37,60 @@ public struct ActivityTracker: Sendable {
         self.rule = rule
     }
 
-    /// Folds in a new reading and advances the state machine.
+    /// Folds in a CPU reading. Ignored unless this is a CPU rule.
     ///
     /// The first reading only establishes a baseline: CPU percent is a rate, so it needs two points.
     public mutating func record(sample: CPUSample, at now: TimeInterval) {
-        defer { lastSample = (sample.cpuTime, now) }
+        guard case .cpu(let busyThreshold, let idleThreshold) = rule.signal else { return }
+        defer { lastCPUSample = (sample.cpuTime, now) }
 
-        guard let previous = lastSample else { return }
+        guard let previous = lastCPUSample else { return }
         let elapsed = now - previous.at
         guard elapsed > 0 else { return }
 
-        let consumed = max(0, sample.cpuTime - previous.cpuTime)
-        cpuPercent = (consumed / elapsed) * 100
-        advance(at: now)
+        cpuPercent = (max(0, sample.cpuTime - previous.cpuTime) / elapsed) * 100
+
+        // Between the two thresholds the state is left alone, so a process hovering near the line
+        // cannot flap the Mac's power state.
+        if cpuPercent >= busyThreshold {
+            state = .busy
+        } else if cpuPercent < idleThreshold {
+            markQuiet(at: now)
+        } else {
+            advanceGrace(at: now)
+        }
     }
 
-    /// Advances the grace period without a new reading, so a cooling process still expires.
+    /// Folds in the watcher's most recent change time. Ignored unless this is a file-activity rule.
+    public mutating func record(lastFileChange: TimeInterval?, at now: TimeInterval) {
+        guard case .fileActivity = rule.signal else { return }
+
+        if let lastFileChange, lastFileChange != lastSeenFileChange {
+            lastSeenFileChange = lastFileChange
+            state = .busy
+        } else {
+            markQuiet(at: now)
+        }
+    }
+
+    /// Advances the grace period without a new observation.
     public mutating func tick(at now: TimeInterval) {
-        advance(at: now)
+        advanceGrace(at: now)
     }
 
-    private mutating func advance(at now: TimeInterval) {
+    private mutating func markQuiet(at now: TimeInterval) {
         switch state {
-        case .idle:
-            if cpuPercent >= rule.busyThreshold {
-                state = .busy
-            }
         case .busy:
-            if cpuPercent < rule.idleThreshold {
-                state = .cooling(since: now)
-            }
-        case .cooling(let since):
-            if cpuPercent >= rule.busyThreshold {
-                state = .busy
-            } else if now - since >= rule.gracePeriod {
-                state = .idle
-            }
+            state = .cooling(since: now)
+        case .cooling, .idle:
+            advanceGrace(at: now)
+        }
+    }
+
+    private mutating func advanceGrace(at now: TimeInterval) {
+        guard case .cooling(let since) = state else { return }
+        if now - since >= rule.gracePeriod {
+            state = .idle
         }
     }
 }
